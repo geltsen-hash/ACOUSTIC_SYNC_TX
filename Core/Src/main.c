@@ -25,7 +25,11 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum
+{
+   NORM,
+   TUNE
+} work_mode_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -45,11 +49,16 @@ TIM_HandleTypeDef htim5;
 UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+int32_t PulsePeriod = 544;
 const uint32_t ticks_per_period = 272;
 uint32_t ticks_per_bit = 272 * 66;
 uint32_t ticks_per_stop_bit = 272 * 66;
 uint32_t N = 0;
-char transmit_buff[64] = {0};
+volatile work_mode_t work_mode = NORM;
+
+bool firstByteWait = true;
+uint8_t receive_buff[128] = {0};
+char transmit_buff[128] = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -116,43 +125,116 @@ int main(void)
   TIM1->BDTR &= ~TIM_BDTR_MOE; // Timer outputs disabled by default
   TIM1->ARR = ticks_per_period * 2 - 1; // 544 - 1
   TIM1->CCR1 = ticks_per_period;        // 272 (50% duty)
+
+  // Запуск приема команд по UART
+  firstByteWait = true;
+  HAL_UART_Receive_IT(&huart1, receive_buff, 1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      // 1. Сброс счетчика 2-секундного цикла
-      TIM5->CNT = 0;
-
-      // 2. Включение питания преобразователя TPS
-      GPIOB->ODR |= (1 << 14); // DIS_TPS_Pin = 1
-      delay_micros(200);
-
-      // 3. Излучение 31-битной М-последовательности Баркера (154.4 кГц)
-      SEND_M_SEQ();
-
-      // 4. Формирование импульса синхронизации SYNC_OUT (PA0) и индикация LED (PA5)
-      GPIOA->ODR |= (1 << 0);
-      GPIOA->ODR |= (1 << 5);
-      delay_micros(300);
-      GPIOA->ODR &= ~(1 << 0);
-      GPIOA->ODR &= ~(1 << 5);
-
-      // 5. Отключение питания аналоговой части на время паузы (энергосбережение)
-      GPIOB->ODR &= ~(1 << 14); // DIS_TPS_Pin = 0
-      GPIOB->ODR |= (1 << 11);  // DIS_DRV_Pin = 1 (Driver OFF)
-
-      N++;
-
-      // 6. Ожидание завершения 2.0-секундного периода (168 000 000 тактов)
-      while (TIM5->CNT < SYNC_PERIOD_TICKS)
+      if (work_mode == NORM)
       {
-          __NOP();
+          // 1. Сброс счетчика 2-секундного цикла
+          TIM5->CNT = 0;
+
+          // 2. Включение питания преобразователя TPS
+          GPIOB->ODR |= (1 << 14); // DIS_TPS_Pin = 1
+          delay_micros(200);
+
+          // 3. Излучение 31-битной М-последовательности Баркера (154.4 кГц)
+          SEND_M_SEQ();
+
+          // 4. Формирование импульса синхронизации SYNC_OUT (PA0) и индикация LED (PA5)
+          GPIOA->ODR |= (1 << 0);
+          GPIOA->ODR |= (1 << 5);
+          delay_micros(300);
+          GPIOA->ODR &= ~(1 << 0);
+          GPIOA->ODR &= ~(1 << 5);
+
+          // 5. Отключение питания аналоговой части на время паузы (энергосбережение)
+          GPIOB->ODR &= ~(1 << 14); // DIS_TPS_Pin = 0
+          GPIOB->ODR |= (1 << 11);  // DIS_DRV_Pin = 1 (Driver OFF)
+
+          N++;
+
+          // 6. Ожидание завершения 2.0-секундного периода (168 000 000 тактов)
+          while (TIM5->CNT < SYNC_PERIOD_TICKS && work_mode == NORM)
+          {
+              __NOP();
+          }
+      }
+      else if (work_mode == TUNE)
+      {
+          // Режим непрерывной генерации / свипирования для настройки резонанса
+          GPIOB->ODR |= (1 << 14);  // TPS ON
+          GPIOB->ODR &= ~(1 << 11); // Bridge Driver ON
+          TIM1->BDTR |= TIM_BDTR_MOE; // PWM ON
+          HAL_Delay(100);
       }
   }
   /* USER CODE END WHILE */
 }
+
+/* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == &huart1)
+    {
+        if (firstByteWait == true)
+        {
+            firstByteWait = false;
+            // Префикс команды 'G' (ASCI 71)
+            if (receive_buff[0] == 'G')
+            {
+                if (HAL_UART_Receive(&huart1, receive_buff + 1, 7, 5) != HAL_OK)
+                {
+                    memset((char*)transmit_buff, 0x00, sizeof(transmit_buff));
+                    memset((char*)receive_buff, 0x00, sizeof(receive_buff));
+                }
+
+                // Команда GTUN (ASCI: T=84, U=85, N=78) -> Режим свипирования / настройки частоты
+                if (receive_buff[1] == 'T' && receive_buff[2] == 'U' && receive_buff[3] == 'N')
+                {
+                    work_mode = TUNE;
+                    if (1 == sscanf((char*)receive_buff, "TUN%ld", &PulsePeriod))
+                    {
+                        TIM1->BDTR &= ~TIM_BDTR_MOE; // timer off
+                        TIM1->ARR = PulsePeriod - 1;
+                        TIM1->CCR1 = (PulsePeriod / 2) - 1;
+                        snprintf(transmit_buff, sizeof(transmit_buff), "TUNE: ARR=%lu CCR1=%lu\r\n", TIM1->ARR, TIM1->CCR1);
+                        HAL_UART_Transmit(&huart1, (uint8_t*)transmit_buff, strlen(transmit_buff), 30);
+                        TIM1->BDTR |= TIM_BDTR_MOE; // timer on
+                        TIM1->EGR = 0x1;
+                    }
+                    else
+                    {
+                        HAL_UART_Transmit(&huart1, (uint8_t*)"TUNE_MODE\r\n", 11, 50);
+                    }
+                }
+                // Команда GNOR (ASCI: N=78, O=79, R=82) -> Возврат в штатный режим (NORM)
+                else if (receive_buff[1] == 'N' && receive_buff[2] == 'O' && receive_buff[3] == 'R')
+                {
+                    work_mode = NORM;
+                    TIM1->BDTR &= ~TIM_BDTR_MOE; // timer off
+                    TIM1->ARR = ticks_per_period * 2 - 1; // 544 - 1
+                    TIM1->CCR1 = ticks_per_period;
+                    GPIOB->ODR &= ~(1 << 14); // TPS OFF
+                    GPIOB->ODR |= (1 << 11);  // Driver OFF
+                    HAL_UART_Transmit(&huart1, (uint8_t*)"NORM\r\n", 6, 50);
+                }
+            }
+        }
+
+        memset((char*)transmit_buff, 0x00, sizeof(transmit_buff));
+        memset((char*)receive_buff, 0x00, sizeof(receive_buff));
+        firstByteWait = true;
+        HAL_UART_Receive_IT(&huart1, receive_buff, 1);
+    }
+}
+/* USER CODE END 4 */
 
 /**
   * @brief System Clock Configuration (84 MHz)
