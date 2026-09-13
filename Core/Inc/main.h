@@ -59,14 +59,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define SYNC_OUT_Pin GPIO_PIN_0
-#define SYNC_OUT_GPIO_Port GPIOA
-#define DIS_DRV_Pin GPIO_PIN_11
-#define DIS_DRV_GPIO_Port GPIOB
-#define LED_Pin GPIO_PIN_13
-#define LED_GPIO_Port GPIOB
-#define DIS_TPS_Pin GPIO_PIN_14
-#define DIS_TPS_GPIO_Port GPIOB
+#define SYNC_OUT_Pin        GPIO_PIN_0
+#define SYNC_OUT_GPIO_Port  GPIOA
+#define LED_TX_Pin          GPIO_PIN_5
+#define LED_TX_GPIO_Port    GPIOA
+#define DIS_DRV_Pin         GPIO_PIN_11
+#define DIS_DRV_GPIO_Port   GPIOB
+#define DIS_TPS_Pin         GPIO_PIN_14
+#define DIS_TPS_GPIO_Port   GPIOB
 
 /* USER CODE BEGIN Private defines */
 

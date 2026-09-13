@@ -7,9 +7,7 @@
 
 #include "functions.h"
 
-extern uint32_t ticks_per_period;
 extern uint32_t ticks_per_bit;
-extern uint32_t ticks_per_stop_bit;
 
 void DWT_Init(void){
 	SCB_DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; // разрешаем использовать счётчик
@@ -28,39 +26,16 @@ void delay_tick(uint32_t ticks){
 }
 
 void SEND_BIT_1(uint8_t bits){
-	TIM1->BDTR |= TIM_BDTR_MOE;             // timer on
-	GPIOB->ODR &= ~(1 << 11);               // ENA драйвера моста 0 - ON
-	TIM1->EGR = 0x1;                        // counter reset 0
-	delay_tick(ticks_per_bit * bits);       // wait for periods * ticks_per_period
-	TIM1->BDTR &= ~TIM_BDTR_MOE;            // timer off
-	GPIOB->ODR |= (1 << 11);                // ENA драйвера моста 1 - OFF
+	TIM1->BDTR |= TIM_BDTR_MOE;                    // Включение генерации ШИМ TIM1
+	DIS_DRV_GPIO_Port->BRR = DIS_DRV_Pin;          // Разрешение мостового драйвера (Active Low: 0 - ON)
+	TIM1->EGR = TIM_EGR_UG;                        // Сброс фазы таймера
+	delay_tick(ticks_per_bit * bits);              // Длительность 66 периодов * bits
+	TIM1->BDTR &= ~TIM_BDTR_MOE;                   // Выключение генерации ШИМ
+	DIS_DRV_GPIO_Port->BSRR = DIS_DRV_Pin;         // Отключение мостового драйвера (1 - OFF)
 }
 
 void SEND_BIT_0(uint8_t bits){
 	delay_tick(ticks_per_bit * bits);
-}
-
-void SEND_BYTE(uint8_t Byte){
-	// стартовый бит
-	TIM1->BDTR |= TIM_BDTR_MOE;
-	TIM1->EGR = 0x1;
-	delay_tick(ticks_per_bit);
-	TIM1->BDTR &= ~TIM_BDTR_MOE;
-
-	// данные
-	for(int i = 0; i < 8; i++){
-		if(((Byte >> i) & 1u) == 1){
-			TIM1->BDTR |= TIM_BDTR_MOE;
-			TIM1->EGR = 0x1;
-			delay_tick(ticks_per_bit);
-			TIM1->BDTR &= ~TIM_BDTR_MOE;
-		}
-		else {
-			delay_tick(ticks_per_bit);
-		}
-	}
-	// стоповый бит
-	delay_tick(ticks_per_stop_bit);
 }
 
 void SEND_M_SEQ(void){
